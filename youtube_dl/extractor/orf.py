@@ -3,6 +3,7 @@ from __future__ import unicode_literals
 
 import re
 
+from datetime import datetime
 from .common import InfoExtractor
 from ..compat import compat_str
 from ..utils import (
@@ -12,6 +13,7 @@ from ..utils import (
     HEADRequest,
     int_or_none,
     orderedSet,
+    parse_iso8601,
     remove_end,
     str_or_none,
     strip_jsonp,
@@ -19,6 +21,135 @@ from ..utils import (
     unified_strdate,
     url_or_none,
 )
+
+
+class ORFTVIE(InfoExtractor):
+    IE_NAME = 'orf:tv'
+    IE_DESC = 'ORF TV'
+    _VALID_URL = r'^https?://tv\.orf\.at/program/(?P<id>[^/]+/[^/]+)(?<!/index)\.html$'
+
+    _TESTS = [{
+        'url': 'https://tv.orf.at/program/orf2/zib7338.html',
+        'playlist': [{
+            'md5': '2942210346ed779588f428a92db88712',
+            'info_dict': {
+                'id': '8896777',
+                'ext': 'mp4',
+                'title': 'Aufgetischt: Mit der Steirischen Tafelrunde',
+                'description': 'md5:c1272f0245537812d4e36419c207b67d',
+                'duration': 2668,
+                'upload_date': '20141208',
+            },
+        }],
+    }]
+
+    def retrieve_value(self, dct, key_list):
+        subdict = dct
+        for k in key_list:
+            if k not in subdict or subdict[k] is None:
+                return None
+            subdict = subdict[k]
+        return subdict
+
+    def _real_extract(self, url):
+        video_id = self._match_id(url)
+        webpage = self._download_webpage(url, video_id)
+
+        ppid = self._search_regex(
+            r'<div[^>]*\sdata-ppid=(["\'])(?P<ppid>.+?)\1',
+            webpage, 'metadata id', group='ppid')
+
+        manifest = self._download_json(" https://api-tvthek.orf.at/api/v4.2/public/content-by-dds-programplanguid/" + ppid, video_id).get('episode')
+
+        if not manifest:
+            return self.to_screen("This page contains no video stream.")
+
+        entries = []
+        video_id, title = manifest.get('id'), manifest.get('title')
+        if not video_id or not title:
+            return
+        video_id = compat_str(video_id)
+
+        sources = manifest.get('sources')
+        for stream_type_key, stream_type_value in sources.items():
+            formats = []
+            for format_entry_raw in stream_type_value:
+                src = url_or_none(format_entry_raw.get('src'))
+                if not src:
+                    continue
+                format_id_list = [stream_type_key]
+                for key in ('delivery', 'quality', 'quality_string', 'quality_key'):
+                    value = format_entry_raw.get(key)
+                    if value:
+                        format_id_list.append(value)
+                format_id = '-'.join(format_id_list)
+                ext = determine_ext(src)
+                if ext == 'm3u8':
+                    m3u8_formats = self._extract_m3u8_formats(
+                        src, video_id, 'mp4', m3u8_id=format_id, fatal=False)
+                    if any('/geoprotection' in f['url'] for f in m3u8_formats):
+                        self.raise_geo_restricted()
+                    formats.extend(m3u8_formats)
+                elif ext == 'f4m':
+                    formats.extend(self._extract_f4m_formats(
+                        src, video_id, f4m_id=format_id, fatal=False))
+                elif ext == 'mpd':
+                    formats.extend(self._extract_mpd_formats(
+                        src, video_id, mpd_id=format_id, fatal=False))
+                else:
+                    formats.append({
+                        'format_id': format_id,
+                        'url': src,
+                        'protocol': format_entry_raw.get('protocol'),
+                    })
+
+            self._check_formats(formats, video_id)
+            self._sort_formats(formats)
+
+        subtitles = {}
+        for sub_key, sub_val in manifest.get('subtitle', {}).items():
+            if not sub_key.endswith('_url'):
+                continue
+            subtitles.setdefault('de-AT', []).append({
+                'url': sub_val,
+            })
+
+        thumbnails = []
+        thumbs_raw = self.retrieve_value(manifest, ['_embedded', 'image', 'public_urls'])
+        if thumbs_raw:
+            for thumb_prio, thumb_key in enumerate(['reference', 'highlight_teaser', 'player']):
+                thumb_val = thumbs_raw.get(thumb_key)
+                print(thumb_key)
+                if thumb_val:
+                    thumb_url = thumb_val.get('url')
+                    if thumb_url:
+                        thumbnails.append({
+                            'id': thumb_key,
+                            'url': thumb_url,
+                            'preference': thumb_prio,
+                        })
+                        break
+
+        upload_date = parse_iso8601(manifest.get('release_date'))
+
+        entries.append({
+            '_type': 'video',
+            'id': video_id,
+            'title': manifest.get('share_subject'),
+            'formats': formats,
+            'subtitles': subtitles,
+            'description': manifest.get('share_subject'),
+            'duration': int_or_none(manifest.get('duration_in_seconds')),
+            'timestamp': upload_date,
+            'upload_date': datetime.fromtimestamp(upload_date).strftime('%Y%m%d'),
+            'thumbnails': thumbnails,
+        })
+
+        return {
+            '_type': 'playlist',
+            'entries': entries,
+            'id': video_id,
+        }
 
 
 class ORFTVthekIE(InfoExtractor):
