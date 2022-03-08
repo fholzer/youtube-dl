@@ -9,6 +9,7 @@ from ..compat import compat_str
 from ..utils import (
     clean_html,
     determine_ext,
+    dict_get,
     float_or_none,
     HEADRequest,
     int_or_none,
@@ -59,18 +60,19 @@ class ORFTVIE(InfoExtractor):
             r'<div[^>]*\sdata-ppid=(["\'])(?P<ppid>.+?)\1',
             webpage, 'metadata id', group='ppid')
 
-        manifest = self._download_json(" https://api-tvthek.orf.at/api/v4.2/public/content-by-dds-programplanguid/" + ppid, video_id).get('episode')
+        metadata = self._download_json(" https://api-tvthek.orf.at/api/v4.2/public/content-by-dds-programplanguid/" + ppid, video_id)
 
-        if not manifest:
+        stream = dict_get(metadata, ['episode', 'livestream'])
+        if not stream:
             return self.to_screen("This page contains no video stream.")
 
         entries = []
-        video_id, title = manifest.get('id'), manifest.get('title')
+        video_id, title = stream.get('id'), stream.get('title')
         if not video_id or not title:
             return
         video_id = compat_str(video_id)
 
-        sources = manifest.get('sources')
+        sources = stream.get('sources')
         for stream_type_key, stream_type_value in sources.items():
             formats = []
             for format_entry_raw in stream_type_value:
@@ -107,7 +109,7 @@ class ORFTVIE(InfoExtractor):
             self._sort_formats(formats)
 
         subtitles = {}
-        for sub_key, sub_val in manifest.get('subtitle', {}).items():
+        for sub_key, sub_val in stream.get('subtitle', {}).items():
             if not sub_key.endswith('_url'):
                 continue
             subtitles.setdefault('de-AT', []).append({
@@ -115,7 +117,7 @@ class ORFTVIE(InfoExtractor):
             })
 
         thumbnails = []
-        thumbs_raw = self.retrieve_value(manifest, ['_embedded', 'image', 'public_urls'])
+        thumbs_raw = self.retrieve_value(stream, ['_embedded', 'image', 'public_urls'])
         if thumbs_raw:
             for thumb_prio, thumb_key in enumerate(['reference', 'highlight_teaser', 'player']):
                 thumb_val = thumbs_raw.get(thumb_key)
@@ -130,16 +132,16 @@ class ORFTVIE(InfoExtractor):
                         })
                         break
 
-        upload_date = parse_iso8601(manifest.get('release_date'))
+        upload_date = parse_iso8601(stream.get('release_date'))
 
         entries.append({
             '_type': 'video',
             'id': video_id,
-            'title': manifest.get('share_subject'),
+            'title': stream.get('share_subject'),
             'formats': formats,
             'subtitles': subtitles,
-            'description': manifest.get('share_subject'),
-            'duration': int_or_none(manifest.get('duration_in_seconds')),
+            'description': stream.get('share_subject'),
+            'duration': int_or_none(stream.get('duration_in_seconds')),
             'timestamp': upload_date,
             'upload_date': datetime.fromtimestamp(upload_date).strftime('%Y%m%d'),
             'thumbnails': thumbnails,
