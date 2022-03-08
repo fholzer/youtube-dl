@@ -72,6 +72,10 @@ class ORFTVIE(InfoExtractor):
             return
         video_id = compat_str(video_id)
 
+        is_drm_protected = stream.get('is_drm_protected')
+        if is_drm_protected:
+            self.report_warning("Stream is DRM protected.", video_id)
+
         sources = stream.get('sources')
         for stream_type_key, stream_type_value in sources.items():
             formats = []
